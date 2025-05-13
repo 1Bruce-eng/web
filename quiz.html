@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" rel="stylesheet">
+    <script src="./node_modules/socket.io/client-dist/socket.io.js"></script>
+    <title>测验应用</title>
+</head>
+
+<body class="bg-gray-100 font-sans">
+    <nav class="bg-blue-500 p-4">
+        <ul class="flex space-x-4 justify-center">
+            <li><a href="index.html" class="text-white hover:text-gray-200">首页</a></li>
+            <li><a href="details.html" class="text-white hover:text-gray-200">详细信息</a></li>
+            <li><a href="quiz.html" class="text-white hover:text-gray-200">测验应用</a></li>
+        </ul>
+    </nav>
+    <div class="container mx-auto p-8">
+        <h1 class="text-3xl font-bold text-blue-600">测验应用</h1>
+        <div id="login" class="mt-4">
+
+            <div class="bg-white p-6 rounded-lg shadow-md">
+                <label for="name" class="block text-gray-700 text-lg mb-2">输入你的姓名:</label>
+                <input type="text" id="name" class="border border-gray-300 p-2 w-full rounded mb-4" placeholder="请输入你的名字">
+                <button id="login-btn" class="bg-blue-500 text-white px-6 py-2 rounded hover:bg-blue-600 transition-colors">登录</button>
+            </div>
+        </div>
+        <div id="player-list" class="hidden mt-4">
+            <div class="bg-white p-6 rounded-lg shadow-md">
+                <h2 class="text-xl font-bold text-gray-700 mb-4">在线玩家列表</h2>
+                <ul id="players" class="space-y-2"></ul>
+            </div>
+        </div>
+        <div id="game" class="hidden mt-4">
+            <div class="bg-white p-6 rounded-lg shadow-md">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-bold text-gray-700">当前对战</h2>
+                    <div class="text-sm text-gray-500">
+                        对手: <span id="opponent-name" class="font-semibold"></span>
+                    </div>
+                </div>
+                <div class="mb-6">
+                    <p id="question" class="text-lg font-medium text-gray-800 mb-4"></p>
+                    <ul id="options" class="grid grid-cols-2 gap-4"></ul>
+                </div>
+                <div class="grid grid-cols-2 gap-4 mb-4">
+                    <div class="bg-blue-50 p-4 rounded">
+                        <p class="text-sm text-gray-600">你的得分</p>
+                        <p class="text-2xl font-bold text-blue-600"><span id="your-score">0</span></p>
+                    </div>
+                    <div class="bg-red-50 p-4 rounded">
+                        <p class="text-sm text-gray-600">对手得分</p>
+                        <p class="text-2xl font-bold text-red-600"><span id="opponent-score-value">0</span></p>
+                    </div>
+                </div>
+                <div id="result" class="text-center text-lg font-medium text-gray-700 mb-4"></div>
+                <div id="waiting" class="hidden text-center text-gray-500">
+                    <p>等待对手回答...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const socket = io({
+            transports: ['websocket','polling'],
+            reconnection: true
+        });
+        const loginDiv = document.getElementById('login');
+        const playerListDiv = document.getElementById('player-list');
+        const gameDiv = document.getElementById('game');
+        const nameInput = document.getElementById('name');
+        const loginBtn = document.getElementById('login-btn');
+        const playersList = document.getElementById('players');
+        const questionElement = document.getElementById('question');
+        const optionsElement = document.getElementById('options');
+        const resultElement = document.getElementById('result');
+        const yourScoreElement = document.getElementById('your-score');
+        const opponentScoreElement = document.getElementById('opponent-score-value');
+
+        let currentPlayer;
+        let opponent;
+        let currentQuestion;
+        let yourScore = 0;
+        let opponentScore = 0;
+
+        socket.on('connect', () => {
+            console.log('已连接到服务器，socket ID:', socket.id);
+            if (currentPlayer) {
+                socket.emit('login', currentPlayer);
+            }
+        });
+
+        socket.on('connect_error', (error) => {
+            console.error('连接错误:', error);
+        });
+
+        // 修改 login 按钮点击事件和 connect 事件
+        loginBtn.addEventListener('click', () => {
+            const name = nameInput.value;
+            if (name) {
+                currentPlayer = name;
+                localStorage.setItem('currentPlayer', name); // 存储到本地
+                socket.emit('login', name);
+                loginDiv.classList.add('hidden');
+                playerListDiv.classList.remove('hidden');
+            }
+        });
+        
+        socket.on('connect', () => {
+            currentPlayer = localStorage.getItem('currentPlayer'); // 从本地读取玩家名
+            if (currentPlayer) {
+                socket.emit('login', currentPlayer); // 重连后自动重新登录
+            }
+        });
+
+        socket.on('player-list', (players) => {
+            console.log('收到更新后的玩家列表:', players);
+            playersList.innerHTML = '';
+            if (players.length === 0) {
+                const li = document.createElement('li');
+                li.textContent = '当前没有其他在线玩家';
+                li.className = 'text-gray-500 italic';
+                playersList.appendChild(li);
+            } else {
+                players.forEach(player => {
+                    if (player !== currentPlayer) {
+                        const li = document.createElement('li');
+                        li.textContent = player;
+                        li.className = 'cursor-pointer hover:text-blue-500 p-2';
+                        li.addEventListener('click', () => {
+                            showChallengeDialog(player);
+                        });
+                        playersList.appendChild(li);
+                    }
+                });
+            }
+        });
+
+        // 关键修改：将事件名从 'challenge-accepted' 改为 'challenge-received'
+        socket.on('challenge-received', (data) => {
+            console.log('收到挑战请求:', data);
+            const dialog = document.createElement('div');
+            dialog.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center';
+            dialog.innerHTML = `
+                <div class="bg-white p-6 rounded-lg shadow-lg">
+                    <h3 class="text-lg font-bold mb-4">玩家 ${data.challenger} 向你发出挑战请求，是否接受？</h3>
+                    <div class="flex justify-end space-x-4">
+                        <button class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400" id="accept-no">否</button>
+                        <button class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600" id="accept-yes">是</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(dialog);
+
+            document.getElementById('accept-yes').addEventListener('click', () => {
+                console.log('接受挑战');
+                socket.emit('challenge-received', { 
+                    challenger: data.challenger, 
+                    opponent: currentPlayer 
+                });
+                playerListDiv.classList.add('hidden');
+                gameDiv.classList.remove('hidden');
+                opponent = data.challenger;
+                document.getElementById('opponent-name').textContent = opponent;
+                dialog.remove();
+            });
+
+            document.getElementById('accept-no').addEventListener('click', () => {
+                console.log('拒绝挑战');
+                socket.emit('challenge-rejected', { 
+                    challenger: data.challenger, 
+                    opponent: currentPlayer 
+                });
+                dialog.remove();
+            });
+        });
+
+        socket.on('game-start', (question) => {
+            // 新增：隐藏玩家列表，显示游戏界面（挑战方需要此逻辑）
+            playerListDiv.classList.add('hidden');
+            gameDiv.classList.remove('hidden');
+            
+            currentQuestion = question;
+            questionElement.textContent = question.question;
+            optionsElement.innerHTML = '';
+            
+            question.options.forEach(option => {
+                const li = document.createElement('li');
+                const button = document.createElement('button');
+                button.className = 'w-full p-4 bg-white border border-gray-300 rounded-lg hover:bg-blue-50 hover:border-blue-500 transition-colors';
+                button.textContent = option;
+                button.addEventListener('click', () => {
+                    const buttons = optionsElement.getElementsByTagName('button');
+                    Array.from(buttons).forEach(btn => btn.disabled = true);
+                    
+                    document.getElementById('waiting').classList.remove('hidden');
+                    
+                    socket.emit('answer', { 
+                        player: currentPlayer, 
+                        answer: option, 
+                        questionId: question.id 
+                    });
+                });
+                li.appendChild(button);
+                optionsElement.appendChild(li);
+            });
+        });
+
+        socket.on('round-result', (result) => {
+            if (result.winner === currentPlayer) {
+                yourScore += result.points;
+            } else if (result.winner === opponent) {
+                opponentScore += result.points;
+            }
+            yourScoreElement.textContent = yourScore;
+            opponentScoreElement.textContent = opponentScore;
+            resultElement.textContent = result.message;
+            setTimeout(() => {
+                resultElement.textContent = '';
+                socket.emit('next-question', { challenger: currentPlayer, opponent: opponent });
+            }, 5000);
+        });
+
+        socket.on('game-end', (winner) => {
+            if (winner === currentPlayer) {
+                alert('你赢了！');
+            } else if (winner === opponent) {
+                alert('你输了！');
+            } else {
+                alert('平局！');
+            }
+            gameDiv.classList.add('hidden');
+            playerListDiv.classList.remove('hidden');
+            yourScore = 0;
+            opponentScore = 0;
+            yourScoreElement.textContent = 0;
+            opponentScoreElement.textContent = 0;
+        });
+
+        socket.on('disconnect', () => {
+            console.log('与服务器断开连接');
+            alert('与服务器断开连接，请刷新页面重试');
+        });
+
+        socket.on('challenge-failed', (data) => {
+            showMessage(data.message);
+        });
+
+        socket.on('challenge-rejected', (data) => {
+            showMessage(data.message);
+        });
+
+
+        window.addEventListener('beforeunload', () => {
+            if (currentPlayer) {
+                socket.emit('disconnect', currentPlayer);
+            }
+        });
+
+        function showChallengeDialog(opponent) {
+            const dialog = document.createElement('div');
+            dialog.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center';
+            dialog.innerHTML = `
+                <div class="bg-white p-6 rounded-lg shadow-lg">
+                    <h3 class="text-lg font-bold mb-4">是否向 ${opponent} 发起挑战？</h3>
+                    <div class="flex justify-end space-x-4">
+                        <button class="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400" id="challenge-no">否</button>
+                        <button class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600" id="challenge-yes">是</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(dialog);
+
+            document.getElementById('challenge-yes').addEventListener('click', () => {
+                console.log('发送挑战请求:', { challenger: currentPlayer, opponent: opponent });
+                socket.emit('challenge', { challenger: currentPlayer, opponent: opponent });
+                dialog.remove();
+                showMessage('挑战请求已发送');
+            });
+
+            document.getElementById('challenge-no').addEventListener('click', () => {
+                dialog.remove();
+            });
+        }
+
+        function showMessage(message) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'fixed top-4 right-4 bg-green-500 text-white px-4 py-2 rounded shadow-lg';
+            messageDiv.textContent = message;
+            document.body.appendChild(messageDiv);
+            setTimeout(() => messageDiv.remove(), 3000);
+        }
+    </script>
+</body>
+
+</html>
+    
